@@ -72,6 +72,82 @@ struct bounds_t
 ImColor visible_color = ImColor(255, 0, 0);
 bool in_lobby = false;
 
+
+struct PlayerInfo {
+	Vector3 position;
+	int health;
+};
+
+std::vector<PlayerInfo> playerInfoVector;
+std::mutex positionMutex;
+
+//each of these functions should be called in a separate thread and detached
+
+void EntityCache() {
+
+	while (true)
+	{
+		globals->is_in_game = DMA::Read<int>(sdk::module_base + offset::game_mode, sizeof(int)) > 1;
+		globals->player_count = DMA::Read<int>(sdk::module_base + offset::game_mode, sizeof(int));
+	}
+
+
+	//	sleep thread for x amount of seconds as we dont need to read this data constantly
+}
+
+
+void reads() {
+
+	//do your main reads here such as player position, health, etc that need to be updated constantly
+
+	while (true)
+	{
+		std::vector<PlayerInfo> tempPlayerInfoVector;
+
+		for (;;)
+		{
+			//read read read...
+			
+			//push position to the vector
+			if (health > 0 && health <= 100) {
+				PlayerInfo playerInfo;
+				playerInfo.position = playerPos;
+				playerInfo.health = health;
+				tempPlayerInfoVector.push_back(playerInfo);
+			}
+		}
+		
+		// using mutex so that we dont have race conditions with our drawing thread
+		{
+			std::lock_guard<std::mutex> lock(positionMutex);
+			playerInfoVector = std::move(tempPlayerInfoVector);
+		}
+	}
+
+}
+
+
+}
+
+
+void Drawing() {
+
+	//call this function in your render loop
+
+	std::vector<PlayerInfo> tempPlayerInfoVector;
+	{
+		std::lock_guard<std::mutex> lock(positionMutex);
+		tempPlayerInfoVector = playerInfoVector;
+	}
+
+	for (const auto& playerInfo : tempPlayerInfoVector)
+	{
+		// draw	
+	}
+	
+}
+
+
 namespace game {
 	class c_game {
 	public:
@@ -87,47 +163,56 @@ namespace game {
 
 			for (;;)
 			{
-				// incase you want to use caching
+				
 			}
 
 		}
 		auto ActorLoop() -> void
 		{
-			globals->is_in_game = Utilities->is_user_in_game();
-			globals->player_count = Utilities->player_count();
-			if (globals->is_in_game)
+			//globals->is_in_game = Utilities->is_user_in_game();
+			//if (!globals->is_in_game) return;
+
+			//globals->player_count = Utilities->player_count();
+
+			pointer->client_info = decrypt->Client_Information();
+
+			pointer->client_info_base = decrypt->Client_Base(pointer->client_info);
+
+			auto ref_def_pointer = decrypt_refdef->retrieve_ref_def();
+
+			decrypt_refdef->ref_def_nn = DMA::Read<ref_def_t>(ref_def_pointer, sizeof(ref_def_t));
+
+			player Local_Player(pointer->client_info_base + (Utilities->local_player_index() * offset::player_size));
+
+			auto Local_Player_Position = Local_Player.get_position();
+
+			auto Local_Player_Team = Local_Player.team_id();
+
+			auto Entity_Bone_Base = decrypt->bone_base();
+
+			auto Entity_Bone_Position = Utilities->retrieve_bone_position_vec(pointer->client_info);
+
+			for (int i = 0; i < globals->player_count; i++)
 			{
-				pointer->client_info = decrypt->Client_Information();
-				pointer->client_info_base = decrypt->Client_Base(pointer->client_info);
-				auto ref_def_pointer = decrypt_refdef->retrieve_ref_def();
-				decrypt_refdef->ref_def_nn = DMA::Read<ref_def_t>(ref_def_pointer, sizeof(ref_def_t));
-				player Local_Player(pointer->client_info_base + (Utilities->local_player_index() * offset::player_size));
-				auto Local_Player_Position = Local_Player.get_position();
-				auto Local_Player_Team = Local_Player.team_id();
-				auto Entity_Bone_Base = decrypt->bone_base();
-				auto Entity_Bone_Position = Utilities->retrieve_bone_position_vec(pointer->client_info);
+				player entity(pointer->client_info_base + (i * offset::player_size));
 
-				for (int i = 0; i < globals->player_count; i++)
-				{
-					player entity(pointer->client_info_base + (i * offset::player_size));
+				fvector2d player_screen;
+				fvector2d entity_head;
+				fvector position = entity.get_position();
+				auto Bone_Pointer_Index = decrypt->bone_index(i);
+				auto bone_pointer = entity.bone_pointer(Entity_Bone_Base, Bone_Pointer_Index);
 
-					fvector2d player_screen;
-					fvector2d entity_head;
-					fvector position = entity.get_position();
-					auto Bone_Pointer_Index = decrypt->bone_index(i);
-					auto bone_pointer = entity.bone_pointer(Entity_Bone_Base, Bone_Pointer_Index);
+				auto corner_height = abs(entity_head.y - player_screen.y);
+				auto corner_width = corner_height * 0.65;
 
-					auto corner_height = abs(entity_head.y - player_screen.y);
-					auto corner_width = corner_height * 0.65;
+				fvector2d screen_middle = { (float)decrypt_refdef->ref_def_nn.width / 2, (float)decrypt_refdef->ref_def_nn.height / 2 };
 
-					fvector2d screen_middle = { (float)decrypt_refdef->ref_def_nn.width / 2, (float)decrypt_refdef->ref_def_nn.height / 2 };
-
-					if (!entity.is_player_valid() || entity.get_name_entry(i).health < 0)
-						continue;
-					if (entity.team_id() == Local_Player_Team)
-						continue;
-					if (!bone_pointer)
-						continue;
+				if (!entity.is_player_valid() || entity.get_name_entry(i).health < 0)
+					continue;
+				if (entity.team_id() == Local_Player_Team)
+					continue;
+				if (!bone_pointer)
+					continue;
 
 					if (Utilities->w2s(position, player_screen))
 					{
@@ -152,7 +237,15 @@ namespace game {
 								);
 							}
 							if (globals->box) {
-								draw->draw_box(entity_head.x - (corner_width / 2), entity_head.y, corner_width, corner_height, ImColor(255, 255, 255, 255), 1.0f);
+								fvector2d head_screen;
+								auto head_position = Utilities->retrieve_bone_position(bone_pointer, Entity_Bone_Position, 7);
+								if (Utilities->w2s(head_position, head_screen)) {
+									auto player_height = abs(head_screen.y - player_screen.y);
+									auto player_width = player_height * 0.65;
+									auto box_top_left_x = player_screen.x - (player_width / 2);
+									auto box_top_left_y = player_screen.y - player_height;
+									draw->draw_box(box_top_left_x, box_top_left_y, player_width, player_height, ImColor(255, 255, 255, 255), 1.0f);
+									auto box_bottom_edge_y = box_top_left_y + player_height;
 							}
 
 
