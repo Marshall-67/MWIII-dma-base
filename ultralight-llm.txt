@@ -1,0 +1,1810 @@
+# Integrating With Games
+
+**Source URL:** https://docs.ultralig.ht/docs/integrating-with-games
+
+Ultralight offers developers the ability to display fast, modern HTML/CSS/JS within games and other GPU-based apps.
+
+Two Ways to Integrate
+Ultralight can either:
+Render via the CPU to a pixel buffer (using the
+Surface API
+).
+Render via the GPU to a texture (using the
+GPUDriver API
+)
+The pixel-buffer method is easiest to get started and gives great performance across a range of use-cases. In a game, you would simply upload the pixel buffer to a texture each time it changes.
+You can always switch to the GPU renderer later if you are animating lots of paths / images (GPU is superior for these types of workloads) and are comfortable working with low-level GPU driver commands.
+
+If you'd like to use the GPU Renderer instead, please see
+Using a Custom GPUDriver
+Configuring the Library
+The first thing to do is to set up our
+Config
+-- you can use this to customize many low-level rendering, layout, performance, and styling aspects of the engine.
+C++
+#include <Ultralight/Ultralight.h>
+ 
+using namespace ultralight;
+
+void Init() {
+ Config config;
+ 
+ ///
+ /// Let's set some custom global CSS to make our background
+ /// purple by default.
+ ///
+ config.user_stylesheet = "body { background: purple; }";
+ 
+ ///
+ /// Pass our configuration to the Platform singleton so that
+ /// the library can use it.
+ ///
+ Platform::instance().set_config(config);
+}
+
+Check out the Config API
+There's more options to choose from,
+see the full Config API here
+.
+Defining Platform Handlers
+Ultralight was designed to be as platform-agnostic as possible to allow maximum portability and customizability.
+The
+Platform
+singleton can be used to provide custom handlers for things like file loading, font loading, clipboard access, and other low-level OS tasks.
+All platform handlers are optional except for
+FileSystem
+and
+FontLoader
+.
+Using the Default Platform Handlers
+To make it easier to get started, AppCore provides default implementations for FileSystem, FontLoader, and Logger for all major desktop platforms.
+You can use these default implementations in your code via the following (just make sure to
+#include <AppCore/Platform.h>
+, it's not included in the main library header):
+C++
+#include <Ultralight/Ultralight.h>
+#include <AppCore/Platform.h>
+ 
+using namespace ultralight;
+
+void InitPlatform() {
+ ///
+ /// Use the OS's native font loader
+ ///
+ Platform::instance().set_font_loader(GetPlatformFontLoader());
+
+ ///
+ /// Use the OS's native file loader, with a base directory of "."
+ /// All file:/// URLs will load relative to this base directory.
+ ///
+ Platform::instance().set_file_system(GetPlatformFileSystem("."));
+
+ ///
+ /// Use the default logger (writes to a log file)
+ ///
+ Platform::instance().set_logger(GetDefaultLogger("ultralight.log"));
+}
+Using a Custom FileSystem
+When integrating into a game, you may want to provide your own
+FileSystem
+implementation to load encrypted / compressed HTML/JS/CSS assets from your game's native data loader.
+To do this you would simply subclass the
+FileSystem
+interface, override the callbacks, and provide an instance of the class to
+Platform::instance().set_file_system()
+. (This instance should outlive the Renderer).
+Creating the Renderer
+The
+Renderer
+singleton maintains the lifetime of the library, orchestrates all painting and updating, and is required before creating any Views.
+To create the Renderer simply call
+Renderer::Create()
+.
+Text
+RefPtr<Renderer> renderer;
+
+void CreateRenderer() {
+ ///
+ /// Create our Renderer (call this only once per application).
+ /// 
+ /// The Renderer singleton maintains the lifetime of the library
+ /// and is required before creating any Views.
+ ///
+ /// You should set up the Platform handlers before this.
+ ///
+ renderer = Renderer::Create();
+}
+Creating Views
+Views
+are sized containers for displaying web-page content, similar to a tab in a browser. You can create one via
+Renderer::CreateView()
+:
+C++
+RefPtr<View> view;
+
+void CreateView() {
+ ///
+ /// Configure our View, make sure it uses the CPU renderer by
+ /// disabling acceleration.
+ ///
+ ViewConfig view_config;
+ view_config.is_accelerated = false;
+ 
+ ///
+ /// Create an offscreen web view, 500 by 500 pixels large.
+ ///
+ view = renderer->CreateView(500, 500, view_config, nullptr);
+ 
+ ///
+ /// Load raw HTML asynchronously into the view.
+ ///
+ view->LoadHTML("<h1>Hello World!</h1>");
+}
+Using the Surface
+Each
+View
+is painted to an underlying pixel buffer
+Surface
+when using the CPU renderer.
+You can get the Surface for a View via
+View::surface()
+:
+C++
+///
+/// Get the pixel-buffer Surface for a View.
+///
+Surface* surface = view->surface();
+The default Surface implementation is
+BitmapSurface
+, which is backed by a
+Bitmap
+.
+You can access it via the following:
+C++
+///
+/// Get the pixel-buffer Surface for a View.
+///
+Surface* surface = view->surface();
+
+///
+/// Cast it to a BitmapSurface.
+///
+BitmapSurface* bitmap_surface = (BitmapSurface*)surface;
+
+///
+/// Get the underlying bitmap.
+///
+RefPtr<Bitmap> bitmap = bitmap_surface->bitmap();
+Once you have the
+Bitmap
+, you can lock it to access the pixel buffer and upload it to a texture.
+C++
+void CopyBitmapToTexture(RefPtr<Bitmap> bitmap) {
+ ///
+ /// Lock the Bitmap to retrieve the raw pixels.
+ /// The format is BGRA, 8-bpp, premultiplied alpha.
+ ///
+ void* pixels = bitmap->LockPixels();
+
+ ///
+ /// Get the bitmap dimensions.
+ ///
+ uint32_t width = bitmap->width();
+ uint32_t height = bitmap->height();
+ uint32_t stride = bitmap->row_bytes();
+ 
+ ///
+ /// Psuedo-code to upload our pixels to a GPU texture.
+ ///
+ CopyPixelsToTexture(pixels, width, height, stride);
+
+ ///
+ /// Unlock the Bitmap when we are done.
+ ///
+ bitmap->UnlockPixels();
+}
+Updating the Renderer
+You should call
+Renderer::Update()
+as often as possible to give the library a chance to process background tasks, JavaScript callbacks, and dispatch event listeners.
+C++
+void UpdateLogic() {
+ ///
+ /// Give the library a chance to handle any pending tasks and timers.
+ ///
+ ///
+ renderer->Update();
+}
+Rendering Views
+You should generally call
+Renderer::Render()
+once per frame to update the Surface of each View.
+Views only re-render if they actually need painting, you can check if a Surface has changed by checking if
+Surface::dirty_bounds()
+is non-empty.
+You'll also need to call
+Renderer::RefreshDisplay(0)
+to update any animations (ideally you would call this whenever the physical display refreshes but once per frame is close enough).
+C++
+void RenderOneFrame() {
+ ///
+ /// Notify the renderer that the physical display has refreshed and
+ /// any active animations should be updated.
+ ///
+ renderer->RefreshDisplay(0);
+ 
+ ///
+ /// Render all active Views (this updates the Surface for each View).
+ ///
+ renderer->Render();
+ 
+ ///
+ /// Psuedo-code to loop through all active Views.
+ ///
+ for (auto view : view_list) {
+ ///
+ /// Get the Surface as a BitmapSurface (the default implementation).
+ ///
+ BitmapSurface* surface = (BitmapSurface*)(view->surface());
+ 
+ ///
+ /// Check if our Surface is dirty (pixels have changed).
+ ///
+ if (!surface->dirty_bounds().IsEmpty()) {
+ ///
+ /// Psuedo-code to upload Surface's bitmap to GPU texture.
+ ///
+ CopyBitmapToTexture(surface->bitmap());
+ 
+ ///
+ /// Clear the dirty bounds.
+ ///
+ surface->ClearDirtyBounds();
+ }
+ }
+}
+Passing Mouse Input
+Passing mouse input to a
+View
+is pretty straightforward-- just create a
+MouseEvent
+and pass it to
+View::FireMouseEvent()
+:
+C++
+MouseEvent evt;
+evt.type = MouseEvent::kType_MouseMoved;
+evt.x = 100;
+evt.y = 100;
+evt.button = MouseEvent::kButton_None;
+
+view->FireMouseEvent(evt);
+
+Make sure coordinates are localized to the View
+All mouse coordinates should be localized to the View's position in screen-space (top-left is 0,0)
+Also, units should be in logical units, not pixels. (Remember to scale coordinates by whatever device scale you've set in
+ViewConfig
+)
+Passing Keyboard Input
+Keyboard events are broken down into three major types:
+KeyEvent::kType_RawKeyDown
+-- Physical key press
+KeyEvent::kType_KeyUp
+-- Physical key release
+KeyEvent::kType_Char
+-- Text generated from a key press. This is typically only a single character but can be more if generated by an IME (Input Method Editor).
+Key Down Events
+
+RawKeyDown
+You should almost always use
+KeyEvent::kType_RawKeyDown
+for key presses since it lets WebCore translate these events properly.
+Whenever a key is pressed on the keyboard, you should create a
+KeyEvent
+with type
+KeyEvent::kType_RawKeyDown
+and pass it to
+View::FireKeyEvent()
+:
+C++
+// Synthesize a key down event for the 'Right Arrow' key
+KeyEvent evt;
+evt.type = KeyEvent::kType_RawKeyDown;
+evt.virtual_key_code = KeyCodes::GK_RIGHT;
+evt.native_key_code = 0;
+evt.modifiers = 0;
+
+// You'll need to generate a key identifier from the virtual key code
+// when synthesizing events. This function is provided in KeyEvent.h
+GetKeyIdentifierFromVirtualKeyCode(evt.virtual_key_code, evt.key_identifier);
+
+view->FireKeyEvent(evt);
+Key Up Events
+Whenever a key is released on the keyboard, you should create a
+KeyEvent
+with type
+KeyEvent::kType_KeyUp
+and pass it to
+View::FireKeyEvent()
+C++
+// Synthesize a key up event for the 'Right Arrow' key
+KeyEvent evt;
+evt.type = KeyEvent::kType_KeyUp;
+evt.virtual_key_code = KeyCodes::GK_RIGHT;
+evt.native_key_code = 0;
+evt.modifiers = 0;
+
+// You'll need to generate a key identifier from the virtual key code
+// when synthesizing events. This function is provided in KeyEvent.h
+GetKeyIdentifierFromVirtualKeyCode(evt.virtual_key_code, evt.key_identifier);
+
+view->FireKeyEvent(evt);
+Text Input
+In addition to key presses / key releases, you'll need to pass in the actual text generated. (For example, pressing the A key should generate the character
+a
+).
+C++
+// Synthesize an event for text generated from pressing the 'A' key
+KeyEvent evt;
+evt.type = KeyEvent::kType_Char;
+evt.text = "a";
+evt.unmodified_text = "a"; // If not available, set to same as evt.text
+
+view->FireKeyEvent(evt);
+Enter Keys
+The library expects the Enter key to generate text input containing the
+\n
+control character. Certain pages will not respond properly to the enter key if you fail to do so.
+Debugging Keyboard Input
+To help determine if keyboard input is mapped properly, we recommend loading the following page both into your favorite browser and your
+View
+and comparing the output side-by-side as keys are pressed.
+Javascript Key Event Test Script
+:
+https://unixpapa.com/js/testkey.html
+Handling Keyboard Focus
+When dispatching keyboard events in your game, you may only want the View to consume keyboard events when an input element has keyboard focus (usually indicated by a blinking caret).
+You can check if a view has input focus via
+View::HasInputFocus()
+:
+C++
+if (view->HasInputFocus()) {
+ ///
+ /// The View has an input element with visible keyboard focus (blinking caret).
+ /// Dispatch the keyboard event to the view and consume it.
+ ///
+ DispatchAndConsumeKeyboardEvent(view, evt);
+}
+
+You should call
+View::Focus()
+and
+View::Unfocus()
+whenever the View gains or loses focus to give visual indication that the View has active input focus (eg, blinking carets in textfields).
+Multithreading
+The Ultralight API is
+not
+thread-safe-- calling the API from multiple threads is not supported and will lead to subtle issues / application instability.
+The library does not need to run on the main thread though-- you can create the Renderer on another thread and make all calls to the API on that thread.
+Updated
+8 days ago
+
+---
+
+# Garbage-Collected Types
+
+**Source URL:** https://docs.ultralig.ht/docs/garbage-collected-types
+
+JavaScriptCore has an automatic garbage-collector that scans the stack to see if a JavaScript value has any active references. When no references are found, the value will be collected (freed).
+JSValueRef and JSObjectRef Types
+Both
+JSValueRef
+and
+JSObjectRef
+are
+garbage-collected types
+-- if they go out of scope on the stack and are not stored in a global JavaScript object, they will be marked for collection.
+Storing Values on the Heap
+If you store
+JSValueRef
+or
+JSObjectRef
+on a static global or on the heap, the GC may inadvertently free these objects potentially causing memory corruption / crashes. To prevent this you should use
+JSValueProtect()
+and
+JSValueUnprotect()
+to keep them alive.
+Updated
+8 days ago
+Getting the JS Context for a View
+
+---
+
+# Architecture
+
+**Source URL:** https://docs.ultralig.ht/docs/architecture
+
+Module Layout
+Overview of Ultralight Modules
+Module Details
+AppCore
+(Optional)
+Cross-platform app runtime (
+source available here
+), responsible for creating platform windows, handling platform input events, running application event loops, and all platform-specific GPU code.
+Ultralight
+Responsible for managing Views, high-level rendering, input translation, resource policies, and event dispatch.
+WebCore
+The core HTML/CSS layout engine (
+source available here
+), responsible for parsing resources, applying styles, calculating layout, and transforming the result into a tree of paint nodes (during rendering, we walk the tree and turn this into a GPU command list to be drawn by GPUDriver or our parallel CPU rasterizer)
+JavaScriptCore
+The core JavaScript virtual machine, responsible for everything JS-related. We expose the full API for you to integrate deeply into your app.
+UltralightCore
+Proprietary 2D CPU and GPU drawing library, responsible for all low-level graphics routines (paths, fonts, GPU command lists, CPU rasterization, tesselation, image cache, etc.).
+Updated
+8 days ago
+
+---
+
+# Using the OnDOMReady Event
+
+**Source URL:** https://docs.ultralig.ht/docs/using-the-ondomready-event
+
+We recommend performing all JavaScript initialization within the
+LoadListener::OnDOMReady
+event-- this is called when the page has finished parsing the document and has loaded the DOM into memory.
+
+Scripts may execute before this event!
+Some scripts on the page may execute before
+OnDOMReady
+is called. If you need to initialize JavaScript on the page
+before
+any scripts are executed, you should use
+LoadListener::OnWindowObjectReady
+instead.
+Why don't we just always use OnWindowObjectReady?
+The caveat of using
+OnWindowObjectReady
+is that it is only called on pages that have scripts on them, also you can't do any DOM manipulation in that event since the DOM may be not be fully loaded yet.
+Attaching with the LoadListener interface
+This event is part of the
+LoadListener
+interface, we will inherit from it and bind it to our
+View
+.
+C++
+#include <Ultralight/Ultralight.h>
+
+using namespace ultralight;
+
+class MyListener : public LoadListener {
+public:
+ MyListener(View* view) {
+ view->set_load_listener(this);
+ }
+ 
+ virtual ~MyListener() {}
+ 
+ ///
+ /// Use LoadListener::OnDOMReady to wait for the DOM to load.
+ ///
+ virtual void OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) override {
+ ///
+ /// Ignore DOMReady events from child frames.
+ ///
+ if (!is_main_frame)
+ return;
+ 
+ ///
+ /// The main document has loaded, we can initialize any DOM elements and / or
+ /// set up our JavaScript bindings here.
+ ///
+ }
+};
+Updated
+8 days ago
+Calling a JS Function from C++
+
+---
+
+# Writing Your First App
+
+**Source URL:** https://docs.ultralig.ht/docs/writing-your-first-app
+
+Ultralight enables you to build your C/C++ app's front-end with HTML/JS/CSS.
+This gives you the best of both worlds-- fast, beautiful, modern web UI with the power and performance of native code.
+1. Install the prerequisites
+Install the prequisites
+for your platform if you haven't already done so.
+2. Clone the Quick Start repo
+Clone the code in the
+ultralight-ux/ultralight-quick-start
+repository.
+Shell
+git clone
+[email protected]
+:ultralight-ux/ultralight-quick-start.git
+3. Download the Ultralight SDK and extract it to
+/SDK
+Download the Ultralight SDK
+and extract the contents to
+ultralight-quick-start/SDK
+.
+4. Open in VS Code
+Building the app
+Open the
+ultralight-quick-start
+folder in VS Code
+Install the recommended extensions when prompted (C/C++ and CMake Tools)
+Select your preferred build preset (Release or Debug) when prompted
+Build the project using one of these methods:
+Click the "Build" button in the CMake status bar
+Run the "Build (Release)" or "Build (Debug)" task from the Terminal menu
+Press F7 to build with the default configuration
+Running / debugging the app
+After building, you can run and debug the app:
+Open the "Run and Debug" view (Ctrl+Shift+D)
+Select "MyApp" from the dropdown
+Press F5 to start debugging or Ctrl+F5 to run without debugging
+5. Understanding the folder layout
+The quick start project is organized with the following structure:
+ultralight-quick-start/
+ ├── assets/ # HTML resources to bundle with app
+ ├── cmake/ # CMake scripts to automate build
+ ├── src/ # C/C++ source files
+ └── CMakeLists.txt # CMake project file, edit this to customize your app
+Assets Folder
+You should place all your web-page resources (eg, HTML files, JS files, CSS files, images, etc.) inside the
+assets folder
+. Anything in this directory will be bundled with the application post-build.
+You can access these resources via
+file:///
+in your C++ and HTML code, for example:
+C++
+void MyApp::InitializeView() {
+ // Load "app.html" from the "assets" directory
+ myView->LoadURL("file:///app.html");
+}
+6. Customizing the window title
+To change the title of the window, we will need to dive into the C++ source code for our app.
+Open up
+src/MyApp.cpp
+and find the following lines:
+C++
+///
+/// Set the title of our window.
+///
+window_->SetTitle("MyApp");
+Change the string to something like "My Awesome App!" and save the file:
+C++
+///
+/// Set the title of our window.
+///
+window_->SetTitle("My Awesome App!");
+After you've done that, rebuild and relaunch MyApp to see your changes.
+7. Editing the HTML assets
+Let's start editing our HTML assets.
+Open up
+assets/app.html
+and find the following lines:
+HTML
+<body>
+ <h1>Hello World!</h1>
+</body>
+Change the HTML to display another welcome message, like "Welcome to My App!":
+HTML
+<body>
+ <h1>Welcome to My App!</h1>
+</body>
+After you've done that, rebuild and relaunch MyApp to see your changes.
+Updated
+8 days ago
+Now that you've got a simple app working, you can start learning more complex API topics by trying the samples:
+Trying the Samples
+
+---
+
+# Installing Prerequisites
+
+**Source URL:** https://docs.ultralig.ht/docs/installing-prerequisites
+
+Before building any of the sample projects in the Ultralight SDK, you'll need the following:
+Windows (Windows 10 or later)
+Git
+CMake
+(Add it to your PATH during install)
+Visual Studio 2022
+, make sure to select the "Desktop development with C++" workload.
+macOS (Sierra or later)
+Git (on latest macOS you can just type
+git
+from Terminal to install if it isn't already)
+CMake
+(May need to run the "Install Command Line Tools" script in the app to add to your PATH)
+Xcode
+(You can just install the
+Command Line Tools
+if you don't need an IDE)
+Linux (Ubuntu or Debian 9.5+)
+Git
+CMake
+(eg,
+sudo apt install cmake
+)
+Clang (eg,
+sudo apt install build-essential
+)
+On Ubuntu you'll also need:
+sudo apt install libx11-dev xorg-dev libglu1-mesa-dev
+Updated
+8 days ago
+Trying the Samples
+
+---
+
+# Calling a JS Function from C++
+
+**Source URL:** https://docs.ultralig.ht/docs/calling-a-js-function-from-c
+
+Let's say that we have a page with the following HTML/JS on it:
+HTML
+<html>
+ <head>
+ <script>
+ function ShowMessage(message)
+ {
+ document.getElementById('msg').innerHTML = message;
+ }
+ </script>
+ </head>
+ <body>
+ <div id="msg"></div>
+ </body>
+</html>
+Our goal is to call the JavaScript function
+ShowMessage()
+from C++.
+Calling the JS Function with EvaluateScript()
+The easiest way to call
+ShowMessage()
+from C++ is by evaluating a string of JavaScript.
+C++
+///
+/// Use LoadListener::OnDOMReady to wait for the DOM to load.
+///
+void MyApp::OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) {
+ if (!is_main_frame)
+ return;
+ 
+ ///
+ /// Call ShowMessage() by evaluating a string of JavaScript
+ ///
+ caller->EvaluateScript("ShowMessage('Howdy!')");
+ 
+}
+Calling the JS Function with JSObjectCallAsFunction()
+For greater performance and control, you can pass arguments directly to the Function object using JavaScriptCore's
+JSObjectCallAsFunction()
+.
+This API function also offers exception handling, overriding the
+this
+object, and more.
+C++
+#include <JavaScriptCore/JSRetainPtr.h>
+
+// Use LoadListener::OnDOMReady to wait for the DOM to load.
+void MyApp::OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) {
+ if (!is_main_frame)
+ return;
+ 
+ // Acquire the JS execution context for the current page.
+ auto scoped_context = caller->LockJSContext();
+ 
+ // Typecast to the underlying JSContextRef.
+ JSContextRef ctx = (*scoped_context);
+ 
+ // Get the ShowMessage function by evaluating a script. We could have
+ // also used JSContextGetGlobalObject() and JSObjectGetProperty() to 
+ // retrieve this from the global window object as well.
+ 
+ // Create our string of JavaScript, automatically managed by JSRetainPtr
+ JSRetainPtr<JSStringRef> str = adopt(
+ JSStringCreateWithUTF8CString("ShowMessage"));
+
+ // Evaluate the string "ShowMessage"
+ JSValueRef func = JSEvaluateScript(ctx, str.get(), 0, 0, 0, 0);
+
+ // Check if 'func' is actually an Object and not null
+ if (JSValueIsObject(ctx, func)) {
+ 
+ // Cast 'func' to an Object, will return null if typecast failed.
+ JSObjectRef funcObj = JSValueToObject(ctx, func, 0);
+
+ // Check if 'funcObj' is a Function and not null
+ if (funcObj && JSObjectIsFunction(ctx, funcObj)) {
+ 
+ // Create a JS string from null-terminated UTF8 C-string, store it
+ // in a smart pointer to release it when it goes out of scope.
+ JSRetainPtr<JSStringRef> msg = 
+ adopt(JSStringCreateWithUTF8CString("Howdy!"));
+
+ // Create our list of arguments (we only have one)
+ const JSValueRef args[] = { JSValueMakeString(ctx, msg.get()) };
+
+ // Count the number of arguments in the array.
+ size_t num_args = sizeof(args) / sizeof(JSValueRef*);
+
+ // Create a place to store an exception, if any
+ JSValueRef exception = 0;
+
+ // Call the ShowMessage() function with our list of arguments.
+ JSValueRef result = JSObjectCallAsFunction(ctx, funcObj, 0, 
+ num_args, args, 
+ &exception);
+
+ if (exception) {
+ // Handle any exceptions thrown from function here.
+ }
+ 
+ if (result) {
+ // Handle result (if any) here.
+ }
+ }
+ }
+}
+Updated
+8 days ago
+Calling a C Function From JS
+
+---
+
+# Trying the Samples
+
+**Source URL:** https://docs.ultralig.ht/docs/trying-the-samples
+
+The best way to learn the Ultralight API is by trying out the samples.
+1. Install the prerequisites
+Install the prequisites
+for your platform if you haven't already done so.
+2. Download the latest SDK.
+Download the latest SDK from
+our website
+.
+3. Build the samples
+Open up your terminal / command prompt and run the following from wherever you extracted the package:
+Shell
+cmake -B build && cmake --build build --config Release && cmake --install build --config Release
+
+Make sure to use Clang when compiling on Linux
+If you run into compilation issues on Linux, make sure to select Clang instead of GCC as your default compiler.
+Set your CC and CXX environment variables before running CMake again (you may need to delete your build directory)
+Shell
+export CC=/usr/bin/clang
+export CXX=/usr/bin/clang++
+4. Run the samples
+Projects will be built to:
+Shell
+/build/out/
+Just navigate to each of these folders and double click the app / executable to run.
+Updated
+8 days ago
+
+---
+
+# Linking to the Library
+
+**Source URL:** https://docs.ultralig.ht/docs/linking-to-the-library
+
+64-bit Only
+We only offer 64-bit bins (
+x86_64
+/
+amd64
+/
+arm64
+) at this time (upstream JavaScriptCore has dropped 32-bit support).
+Linking on Windows / MSVC
+In Visual Studio, go to
+Linker → General → Additional Library Directories
+in your project's properties and set one of the following:
+$(ULTRALIGHT_SDK_ROOT)/lib/win/x64/
+Then, go to
+Linker → Input → Additional Dependencies
+and add the following:
+Ultralight.lib
+UltralightCore.lib
+WebCore.lib
+AppCore.lib
+Note
+:
+AppCore.lib
+is optional, only link if you use the AppCore API headers..
+Linking on Linux
+First, copy the shared libraries in
+$(ULTRALIGHT_SDK_ROOT)/bin/linux
+to your OS's standard library directory.
+Then, add the following to your Makefile's
+LDFLAGS
+:
+-lUltralight -lUltralightCore -lWebCore -lAppCore
+Note
+:
+-lAppCore
+is optional, only link if you use the AppCore API headers..
+Linking on macOS
+Within XCode, select your target and go to
+General → Linked Frameworks and Libraries
+and add the following:
+libUltralightCore.dylib
+libUltralight.dylib
+libWebCore.dylib
+libAppCore.dylib
+Or alternatively, if you are building with a Makefile, add the following to your
+LDFLAGS
+:
+-lUltralight -lUltralightCore -lWebCore -lAppCore
+Note
+: AppCore is optional, only link if you use the AppCore API headers..
+Updated
+8 days ago
+
+---
+
+# Logging Console Messages
+
+**Source URL:** https://docs.ultralig.ht/docs/logging-console-messages
+
+You can get log output for JavaScript errors, network errors, and more to help diagnose issues when writing code for your
+View
+.
+See
+console.log()
+in JavaScript:
+https://developer.mozilla.org/en-US/docs/Web/API/console/log_static
+Attaching the ViewListener Interface
+You should first subclass
+ViewListener
+and implement the
+ViewListener::OnAddConsoleMessage()
+virtual method.
+Then, bind an instance of your subclass to a
+View
+via
+View::set_view_listener()
+.
+
+See the API reference for
+ViewListener
+here
+.
+Handling ViewListener::OnAddConsoleMessage()
+Here's an example that logs console messages to
+std::cout
+:
+C++
+#include <Ultralight/Ultralight.h>
+#include <iostream>
+ 
+using namespace ultralight;
+
+//
+// Inherited from ViewListener::OnAddConsoleMessage
+//
+// Make sure that you bind 'MyApp' to 'View::set_view_listener'
+// to receive this event.
+//
+void MyApp::OnAddConsoleMessage(View* caller, const ConsoleMessage& msg) {
+ std::cout << "[OnAddConsoleMessage]\n\t"
+ << "\n\tsource:\t" << (uint32_t)msg.source()
+ << "\n\ttype:\t" << (uint32_t)msg.type()
+ << "\n\tlevel:\t" << (uint32_t)msg.level()
+ << "\n\tmessage:\t" << msg.message().utf8().data()
+ << "\n\tline_number:\t" << msg.line_number()
+ << "\n\tcolumn_number:\t" << msg.column_number()
+ << "\n\tsource_id:\t" << msg.source_id().utf8().data()
+ << "\n\tnum_arguments:\t" << msg.num_arguments() << std::endl;
+
+ // console.log() in JavaScript can be passed multiple arguments-- you can
+ // get the raw JavaScript values passed to the function via the following:
+ uint32_t num_args = msg.num_arguments();
+ if (num_args > 0) {
+ for (uint32_t i = 0; i < num_args; i++) {
+ JSValueRef arg = msg.argument_at(i);
+ // Optionally print the argument here, see the JavaScriptCore API
+ // for converting these values to a string.
+ }
+ }
+}
+Updated
+8 days ago
+
+---
+
+# Using a Custom Surface
+
+**Source URL:** https://docs.ultralig.ht/docs/using-a-custom-surface
+
+When rendering on the CPU, the library paints pixels directly into a
+Surface
+object.
+The Default BitmapSurface
+A default Surface implementation,
+BitmapSurface
+, is automatically provided by the library when you call
+Renderer::Create()
+without defining a custom
+SurfaceFactory
+.
+After calling
+Renderer::Render()
+you should get View's underlying Surface, cast it to a
+BitmapSurface
+, retrieve the underlying
+Bitmap
+and display the pixels in your application.
+C++
+///
+/// Get the pixel-buffer Surface for a View.
+///
+Surface* surface = view->surface();
+
+///
+/// Cast it to a BitmapSurface.
+///
+BitmapSurface* bitmap_surface = (BitmapSurface*)surface;
+
+///
+/// Get the underlying bitmap.
+///
+RefPtr<Bitmap> bitmap = bitmap_surface->bitmap();
+
+///
+/// Use the bitmap here...
+///
+Using a Custom Surface Implementation
+The default
+BitmapSurface
+is convenient but, for less overhead, you may want to provide your own
+Surface
+implementation so that the renderer can paint directly into a block of memory controlled by you.
+To define a custom
+Surface
+, you just need to inherit from
+Surface
+and handle the virtual member functions.
+Here is an example that allows us to paint directly to GPU-controlled memory via OpenGL PBOs.
+The pixels are lazily uploaded to an OpenGL texture when
+GLPBOTextureSurface::GetTextureAndSyncIfNeeded()
+is called:
+C++
+///
+/// Custom Surface implementation that allows Ultralight to paint directly
+/// into an OpenGL PBO (pixel buffer object).
+///
+/// PBOs in OpenGL allow us to get a pointer to a block of GPU-controlled
+/// memory for lower-latency uploads to a texture.
+///
+/// For more info: <http://www.songho.ca/opengl/gl_pbo.html>
+///
+class GLPBOTextureSurface : public Surface {
+public:
+ GLPBOTextureSurface(uint32_t width, uint32_t height) {
+ Resize(width, height);
+ }
+
+ virtual ~GLPBOTextureSurface() {
+ ///
+ /// Destroy our PBO and texture.
+ ///
+ if (pbo_id_) {
+ glDeleteBuffers(1, &pbo_id_);
+ pbo_id_ = 0;
+ glDeleteTextures(1, &texture_id_);
+ texture_id_ = 0;
+ }
+ }
+
+ virtual uint32_t width() const override { return width_; }
+
+ virtual uint32_t height() const override { return height_; }
+
+ virtual uint32_t row_bytes() const override { return row_bytes_; }
+
+ virtual size_t size() const override { return size_; }
+
+ virtual void* LockPixels() override { 
+ ///
+ /// Map our PBO to system memory so Ultralight can draw to it.
+ ///
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id_);
+ void* result = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_READ_WRITE);
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+ return result;
+ }
+
+ virtual void UnlockPixels() override { 
+ ///
+ /// Unmap our PBO.
+ ///
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id_);
+ glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER); 
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+ }
+
+ virtual void Resize(uint32_t width, uint32_t height) override {
+ if (pbo_id_ && width_ == width && height_ == height)
+ return;
+
+ ///
+ /// Destroy any existing PBO and texture.
+ ///
+ if (pbo_id_) {
+ glDeleteBuffers(1, &pbo_id_);
+ pbo_id_ = 0;
+ glDeleteTextures(1, &texture_id_);
+ texture_id_ = 0;
+ }
+
+ width_ = width;
+ height_ = height;
+ row_bytes_ = width_ * 4;
+ size_ = row_bytes_ * height_;
+
+ ///
+ /// Create our PBO (pixel buffer object), with a size of 'size_'
+ ///
+ glGenBuffers(1, &pbo_id_);
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id_);
+ glBufferData(GL_PIXEL_UNPACK_BUFFER, size_, 0, GL_DYNAMIC_DRAW);
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+ ///
+ /// Create our Texture object.
+ ///
+ glGenTextures(1, &texture_id_);
+ glBindTexture(GL_TEXTURE_2D, texture_id_);
+ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+ glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+ glBindTexture(GL_TEXTURE_2D, 0);
+ }
+
+ virtual GLuint GetTextureAndSyncIfNeeded() {
+ ///
+ /// This is NOT called by Ultralight.
+ ///
+ /// This helper function is called when our application wants to draw this
+ /// Surface to an OpenGL quad. (We return an OpenGL texture handle)
+ ///
+ /// We take this opportunity to upload the PBO to the texture if the
+ /// pixels have changed since the last call (indicated by dirty_bounds()
+ /// being non-empty)
+ ///
+ if (!dirty_bounds().IsEmpty()) {
+ ///
+ /// Update our Texture from our PBO (pixel buffer object)
+ ///
+ glBindTexture(GL_TEXTURE_2D, texture_id_);
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id_);
+ glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width_, height_,
+ 0, GL_BGRA, GL_UNSIGNED_BYTE, 0);
+ glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+ glBindTexture(GL_TEXTURE_2D, 0);
+
+ ///
+ /// Clear our Surface's dirty bounds to indicate we've handled any
+ /// pending modifications to our pixels.
+ ///
+ ClearDirtyBounds();
+ }
+
+ return texture_id_;
+ }
+
+protected:
+ GLuint texture_id_;
+ GLuint pbo_id_ = 0;
+ uint32_t width_;
+ uint32_t height_;
+ uint32_t row_bytes_;
+ uint32_t size_;
+};
+Registering a Custom Surface
+To allow the library to create/destroy your custom
+Surface
+at will, you also need to define a corresponding
+SurfaceFactory
+for your new class:
+C++
+class GLTextureSurfaceFactory : public ultralight::SurfaceFactory {
+public:
+ GLTextureSurfaceFactory() {}
+
+ virtual ~GLTextureSurfaceFactory() {}
+
+ virtual ultralight::Surface* CreateSurface(uint32_t width, uint32_t height) override {
+ ///
+ /// Called by Ultralight when it wants to create a Surface.
+ ///
+ return new GLPBOTextureSurface(width, height);
+ }
+
+ virtual void DestroySurface(ultralight::Surface* surface) override {
+ //
+ /// Called by Ultralight when it wants to destroy a Surface.
+ ///
+ delete static_cast<GLPBOTextureSurface*>(surface);
+ }
+};
+Finally, you should register this new
+SurfaceFactory
+with
+Platform::instance().set_surface_factory()
+(
+make sure to call this before creating the Renderer or any Views
+):
+C++
+///
+/// You should keep this instance alive for the duration of your program.
+///
+std::unique_ptr<GLTextureSurfaceFactory> factory(new GLTextureSurfaceFactory());
+
+Platform::instance().set_surface_factory(factory.get());
+Using Your Custom Surface
+The library will use
+GLTextureSurfaceFactory
+to create all Surfaces from this point forward.
+We can now safely cast all Surfaces to our custom
+GLPBOTextureSurface
+and use its texture handle in our OpenGL app:
+C++
+///
+/// Get the Surface for a View.
+///
+Surface* surface = view->surface();
+
+///
+/// Cast it to a GLPBOTextureSurface.
+///
+GLPBOTextureSurface* texture_surface = (GLPBOTextureSurface*)surface;
+
+///
+/// Get the underlying texture handle.
+///
+GLuint texture_id = texture_surface->GetTextureAndSyncIfNeeded();
+
+///
+/// Use the texture here...
+///
+Updated
+8 days ago
+
+---
+
+# Using the C++ API
+
+**Source URL:** https://docs.ultralig.ht/docs/using-the-cpp-api
+
+Need C API Instead?
+We also offer a C API for use within C and other languages!
+See
+Using the C API
+Set Up Include Directories
+To use Ultralight in your C++ code, add the following path to your project's include directories (replace
+<SDK_ROOT>
+with the path to the Ultralight SDK):
+<SDK_ROOT>/include/
+Include Headers In Your Code
+Simply include
+<Ultralight/Ultralight.h>
+at the top of your code to import the API.
+#include <Ultralight/Ultralight.h>
+If you want to use the optional AppCore API (cross-platform windowing/drawing layer), you should also include
+<AppCore/AppCore.h>
+at the top of your code.
+#include <AppCore/AppCore.h>
+Ultralight also exposes the full
+JavaScriptCore
+API so that users can make native calls to/from the JavaScript VM. To include these headers simply add:
+#include <JavaScriptCore/JavaScript.h>
+Updated
+8 days ago
+
+---
+
+# Evaluating a String of JS
+
+**Source URL:** https://docs.ultralig.ht/docs/evaluating-a-string-of-js
+
+Using View::EvaluateScript()
+The easiest way to evaluate a string of JavaScript in C++ is by using
+View::EvaluateScript()
+C++
+///
+/// Use LoadListener::OnDOMReady to wait for the DOM to load.
+///
+void MyApp::OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) {
+ ///
+ /// Execute a string of JavaScript
+ ///
+ view->EvaluateScript("document.body.innerHTML = 'Ultralight rocks!';");
+}
+Handling Results
+View::EvaluateScript()
+can return the result from a script execution, if any.
+The result is returned as a String.
+C++
+///
+/// Use LoadListener::OnDOMReady to wait for the DOM to load.
+///
+void MyApp::OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) {
+ 
+ ///
+ /// Evaluate a string of JavaScript, store result in 'result'
+ ///
+ String result = view->EvaluateScript("1 + 1");
+ 
+ ///
+ /// result should now contain "2"
+ ///
+ 
+}
+Using JSEvaluateScript() Directly
+View::EvaluateScript()
+is really just a wrapper for JavaScriptCore's
+JSEvaluateScript()
+. This API function offers lower-level control over script execution (exception handling, overriding
+this
+object, etc.).
+To use this API function we're going to need to create a JavaScript string with
+JSStringCreateWithUTF8CString()
+and then pass it to
+JSEvaluateScript()
+.
+C++
+///
+/// Use LoadListener::OnDOMReady to wait for the DOM to load.
+///
+void MyApp::OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) {
+ ///
+ /// Acquire the JS execution context for the current page.
+ ///
+ auto scoped_context = caller->LockJSContext();
+ 
+ ///
+ /// Typecast to the underlying JSContextRef.
+ ///
+ JSContextRef ctx = (*scoped_context);
+ 
+ const char* script = "document.body.innerHTML = 'Ultralight rocks!';";
+ 
+ ///
+ /// Create our string of JavaScript
+ ///
+ JSStringRef str = JSStringCreateWithUTF8CString(script);
+ 
+ ///
+ /// Execute it with JSEvaluateScript, ignoring other parameters for now
+ ///
+ JSEvaluateScript(ctx, str, 0, 0, 0, 0);
+ 
+ ///
+ /// Release our string (we only Release what we Create)
+ ///
+ JSStringRelease(str);
+ 
+}
+Managing string lifetime with Retain / Release
+The API follows a simple rule-- anything you
+"Create"
+you must
+"Release"
+.
+For example, in the above code snippet we called
+JSStringCreateWithUTF8CString
+. This API function has the word
+Create
+in it so we must release the created object with
+JSStringRelease()
+to avoid a memory leak.
+If you want to increase the ref-count (to retain the object in a C++ wrapper, for instance), you can call
+JSStringRetain()
+.
+The API provides a
+JSRetainPtr<>
+for C++ that automatically manages lifetime for you. Just call
+adopt()
+with any of the
+JSStringCreate
+methods to create a managed string object.
+C++
+#include <JavaScriptCore/JSRetainPtr.h>
+
+///
+/// Use LoadListener::OnDOMReady to wait for the DOM to load.
+///
+void MyApp::OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) {
+ ///
+ /// Acquire the JS execution context for the current page.
+ ///
+ auto scoped_context = caller->LockJSContext();
+ 
+ ///
+ /// Typecast to the underlying JSContextRef.
+ ///
+ JSContextRef ctx = (*scoped_context);
+ 
+ const char* script = "document.body.innerHTML = 'Ultralight rocks!';";
+ 
+ ///
+ /// Create our string of JavaScript, automatically managed by JSRetainPtr
+ ///
+ JSRetainPtr<JSStringRef> str = adopt(
+ JSStringCreateWithUTF8CString(script));
+ 
+ ///
+ /// Execute it with JSEvaluateScript, ignoring other parameters for now
+ ///
+ JSEvaluateScript(ctx, str.get(), 0, 0, 0, 0);
+ 
+}
+Updated
+8 days ago
+Using the OnDOMReady Event
+
+---
+
+# Using the Inspector View
+
+**Source URL:** https://docs.ultralig.ht/docs/using-the-inspector-view
+
+Ultralight exposes the same Inspector found in Safari/WebKit to help you diagnose issues with pages loaded into your Views.
+Bundling the Inspector Assets
+The Inspector requires you to bundle the Inspector Assets with your application before creating any Inspector Views. You'll need to copy the
+/inspector/
+directory from the SDK to your asset directory so that it is accessible by the FileSystem.
+The library will specifically look for
+file:///inspector/Main.html
+to bootstrap the Inspector View.
+Creating an Inspector View
+Each
+View
+has an
+Inspector View
+that can be displayed in your application via an on-screen overlay.
+You can get this View by callilng
+View::inspector()
+and then resizing the returned
+Inspector View
+by calling
+View::Resize()
+on it to your desired dimensions.
+Please note you are still responsible for displaying this View somehow in your application-- basically you would treat it like a new View created via
+Renderer::CreateView()
+and display it the usual way.
+C++
+RefPtr<View> inspector_view = view->inspector();
+inspector_view->Resize(500, 500);
+
+// Display inspector_view in your application here, treat it like a newly-created View
+
+// If you are using AppCore, you would use Overlay::Create(window, inspector_view, x, y)
+
+// If you are using the Renderer directly, you would get render_target() or surface()
+// from inspector_view and display that just like a regular View.
+
+// The Inspector View is owned by the parent View.
+Updated
+8 days ago
+
+---
+
+# Getting the JS Context for a View
+
+**Source URL:** https://docs.ultralig.ht/docs/getting-the-js-context-for-a-view
+
+Most calls in JavaScriptCore requires an execution context. You can get the global JS context for the current page via
+View::LockJSContext()
+.
+C++
+///
+/// Use LoadListener::OnDOMReady to wait for the DOM to load.
+///
+void MyApp::OnDOMReady(View* caller,
+ uint64_t frame_id,
+ bool is_main_frame,
+ const String& url) {
+ ///
+ /// Acquire the JS execution context for the current page.
+ ///
+ auto scoped_context = caller->LockJSContext();
+ 
+ ///
+ /// Typecast to the underlying JSContextRef.
+ ///
+ JSContextRef ctx = (*scoped_context);
+
+ /// Make calls to JavaScriptCore API here...
+}
+JS Context Lifetime
+Just note that this context may change between page loads-- when the context changes all garbage-collected objects (
+JSValueRef
+and
+JSObjectRef
+) are no longer valid.
+Updated
+8 days ago
+Evaluating a String of JS
+
+---
+
+# Using a Custom GPUDriver
+
+**Source URL:** https://docs.ultralig.ht/docs/using-a-custom-gpudriver
+
+Ultralight can emit raw GPU geometry / low-level draw calls to paint directly on the GPU without an intermediate CPU bitmap. We recommend this integration method for best performance when animating many paths / images.
+Renderer-Agnostic Architecture
+Ultralight is designed to be renderer-agnostic. All draw calls are emitted via the GPUDriver interface and expected to be translated into various platform-specific GPU technologies (D3D, Metal, OpenGL, etc.).
+This approach allows Ultralight to be integrated directly with the native renderer of your game.
+GPUDriver API
+The first step to using a custom
+GPUDriver
+is to subclass the
+GPUDriver
+interface and override all the virtual functions.
+You'll need to handle tasks like creating a texture, creating vertex/index buffers, and binding shaders.
+All calls to the
+GPUDriver
+interface are dispatched during
+Renderer::Render()
+but drawing is not performed immediately-- Ultralight queues drawing commands via
+GPUDriver::UpdateCommandList()
+and expects you to dispatch these yourself.
+For porting to
+Direct3D 11
+, see:
+AppCore/src/win/d3d11
+For porting to
+Direct3D 12
+, see:
+AppCore/src/win/d3d12
+For porting to
+OpenGL
+, see:
+AppCore/src/linux/gl
+For porting to
+Metal
+, see
+AppCore/src/mac/metal
+Using the GPU Renderer
+Set up Platform Singleton
+You should notify the library of your custom
+GPUDriver
+implementation by calling
+Platform::instance().set_gpu_driver()
+when setting up the
+Platform
+singleton.
+C++
+#include <Ultralight/Ultralight.h>
+ 
+using namespace ultralight;
+
+void InitRenderer() {
+ // Pseudo-code to create our custom Platform implementations
+ MyGPUDriver* gpu_driver = new MyGPUDriver();
+ MyFileSystem* file_system = new MyFileSystem();
+ MyFontLoader* font_loader = new MyFontLoader();
+ 
+ // Notify the Platform singleton of our implementations
+ Platform::instance().set_gpu_driver(gpu_driver);
+ Platform::instance().set_file_system(file_system);
+ Platform::instance().set_font_loader(font_loader);
+
+ // We can now create the Renderer singleton
+ Ref<Renderer> renderer = Renderer::Create();
+}
+Enable GPU-Acceleration on a View
+Views are unaccelerated by default (ie, they use the CPU renderer and paint to a
+Surface
+).
+You should set
+ViewConfig::is_accelerated
+to
+true
+when creating a
+View
+to have it use the GPU renderer and paint to a
+RenderTarget
+instead.
+C++
+RefPtr<View> view;
+
+void CreateView() {
+ ///
+ /// Create our ViewConfig with GPU acceleration enabled.
+ ///
+ ViewConfig view_config;
+ view_config.is_accelerated = true;
+ 
+ ///
+ /// Create an HTML view, 500 by 500 pixels large.
+ ///
+ view = renderer->CreateView(500, 500, view_config, nullptr);
+ 
+ ///
+ /// Load a raw string of HTML asynchronously into the View.
+ ///
+ view->LoadHTML("<h1>Hello World!</h1>");
+}
+Shader Programs
+Ultralight relies on vertex and pixel shaders for CSS transforms and to draw things like borders, rounded rectangles, shadows, and gradients.
+Right now we have only two shader types:
+kShaderType_Fill
+and
+kShaderType_FillPath
+.
+Both use the same uniforms but have different vertex types.
+Here are the reference implementations for Direct3D (HLSL):
+Vertex Shader (HLSL)
+Pixel Shader (HLSL)
+kShaderType_Fill
+v2f_c4f_t2f_t2f_d28f.hlsl
+fill.hlsl
+kShaderType_FillPath
+v2f_c4f_t2f.hlsl
+fill_path.hlsl
+If your engine uses a custom shader language, you'll need to port these files over.
+Blending Modes
+Ultralight uses a custom blend mode-- you'll need to use the same blending functions in your engine to get color-accurate results when dispatching DrawGeometry commands with blending enabled.
+For reference, here is the render target blend description for the D3D11 driver:
+C++
+D3D11_RENDER_TARGET_BLEND_DESC rt_blend_desc;
+ ZeroMemory(&rt_blend_desc, sizeof(rt_blend_desc));
+ rt_blend_desc.BlendEnable = true;
+ rt_blend_desc.SrcBlend = D3D11_BLEND_ONE;
+ rt_blend_desc.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+ rt_blend_desc.BlendOp = D3D11_BLEND_OP_ADD;
+ rt_blend_desc.SrcBlendAlpha = D3D11_BLEND_INV_DEST_ALPHA;
+ rt_blend_desc.DestBlendAlpha = D3D11_BLEND_ONE;
+ rt_blend_desc.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+ rt_blend_desc.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+Render Loop Integration
+Within your application's main run loop, you should:
+Call
+Renderer::Update()
+as often as possible
+Call
+Renderer::RefreshDisplay(0)
+and
+Renderer::Render()
+once per frame.
+The renderer will call into the
+GPUDriver
+interface during this time synchronize textures, render buffers, geometry, and command lists.
+After calling
+Renderer::Render()
+, you should consume any pending command lists (all drawing is performed via command lists).
+Get the texture handle for each
+View
+and display it on an on-screen quad.
+C++
+void UpdateLogic() {
+ // Calling Update() allows the library to service resource callbacks,
+ // JavaScript events, and other timers.
+ renderer->Update();
+}
+
+void RenderFrame() {
+ renderer->RefreshDisplay(0);
+ renderer->Render();
+
+ // Pseudo-code, consume any pending command-lists in your GPUDriver here.
+ gpu_driver->DrawCommandListIfNeeded();
+ 
+ // Pseudo-code, draw any View textures to on-screen quads here.
+ DrawViewQuadsToScreen();
+}
+Getting the View Texture
+Ultralight doesn't draw anything to the backbuffer-- all Views are drawn to an offscreen
+RenderTarget
+that you can display how you wish.
+Just call
+View::render_target()
+to get the render target for a
+View
+.
+C++
+RenderTarget rtt_info = view->render_target();
+
+// Get the Ultralight texture ID, use this with GPUDriver::BindTexture()
+uint32_t tex_id = rtt_info.texture_id;
+
+// Textures may have extra padding-- to compensate for this you'll need
+// to adjust your UV coordinates when mapping onto geometry.
+Rect uv_coords = rtt_info.uv_coords;
+Once you have this texture you can display it on-screen as a quad or projected onto some other geometry in-game.
+Updated
+7 days ago
+
+---
+
+# Using the C API
+
+**Source URL:** https://docs.ultralig.ht/docs/using-the-c-api
+
+In addition to our
+C++ API
+, Ultralight offers a portable C API for use within C and other languages.
+Set Up Include Directories
+To use Ultralight in your C code, add the following path to your project's include directories (replace
+<SDK_ROOT>
+with the path to the Ultralight SDK):
+<SDK_ROOT>/include/
+Include Headers In Your Code
+Simply include
+<Ultralight/CAPI.h>
+at the top of your code to import the API.
+#include <Ultralight/CAPI.h>
+If you want to use the optional AppCore API (cross-platform windowing/drawing layer), you should also include
+<AppCore/CAPI.h>
+at the top of your code.
+#include <AppCore/CAPI.h>
+Ultralight also exposes the full
+JavaScriptCore
+API so that users can make native calls to/from the JavaScript VM. To include these headers simply add:
+#include <JavaScriptCore/JavaScriptCore.h>
+Updated
+8 days ago
+
+---
+
+# Displaying Custom Textures
+
+**Source URL:** https://docs.ultralig.ht/docs/displaying-custom-textures
+
+Ultralight allows you to display in-game textures directly within web-pages when using the GPU renderer.
+For more information see the
+ImageSource API
+.
+Updated
+8 days ago
+
+---
+
+# About JavaScript Interop
+
+**Source URL:** https://docs.ultralig.ht/docs/about-javascript-interop
+
+Ultralight is built on JavaScriptCore-- the same high-performance JavaScript engine used by Safari/WebKit on macOS and iOS.
+We expose low-level C bindings to JavaScriptCore so that you can seamlessly integrate your native code with JavaScript running on a page.
+
+C++ Wrapper for JavaScriptCore
+We offer a wrapper to simplify usage from C++. See
+JSHelpers.h in the AppCore API
+Using the JavaScriptCore API
+To use the JavaScriptCore API in your code, just include
+<JavaScriptCore/JavaScript.h>
+:
+C
+#include <JavaScriptCore/JavaScript.h>
+You can browse the API headers for JavaScriptCore
+by clicking here
+.
+Common API Types
+API Type
+Description
+JSContextRef
+A JavaScript execution context, you will need this to make most calls in JavaScriptCore.
+JSValueRef
+The base type for all JavaScript values (eg,
+Number
+,
+String
+,
+Object
+,
+Boolean
+, etc.).
+This is a garbage-collected type.
+JSObjectRef
+A JavaScript object-- this value is technically typedef'd to the same underlying type as
+JSValueRef
+and can be passed anywhere that accepts a
+JSValueRef
+.
+This is a garbage-collected type.
+JSStringRef
+A raw UTF-16 string buffer for passing strings to/from JavaScript.
+JSClassDefinition
+Used to create custom JavaScript objects that wrap native objects.
+Updated
+8 days ago
+Garbage-Collected Types
+
+---
+
+# Logging Library Errors
+
+**Source URL:** https://docs.ultralig.ht/docs/logging-library-errors
+
+We recommend using the Logger to log any error messages while developing your app.
+Defining a Custom Logger
+If you're using the low-level renderer (eg,
+Renderer::Create()
+), you'll need to define your own custom logger to handle these log messages.
+Here's an example:
+C++
+#include <cstdio>
+
+using namespace ultralight;
+
+// Define our custom Logger class
+class MyLogger : public Logger {
+public:
+ MyLogger() {}
+ virtual ~MyLogger() {}
+
+ ///
+ /// Called when the library wants to print a message to the log.
+ ///
+ virtual void LogMessage(LogLevel log_level, const String& message) override {
+ printf("%s\n", message.utf8().data());
+ }
+};
+
+// In your initialization routine:
+void InitApp() {
+ // Tell the library to use our custom Logger class
+ Platform::instance().set_logger(new MyLogger());
+ 
+ // Create renderer, views, etc.
+}
+Logging Messages with AppCore
+If you're using AppCore (eg,
+App::Create()
+), a default Logger is already defined for you that writes output to a log file.
+The location of this log file differs on each Platform:
+Replace
+MyCompany
+with
+Settings.developer_name
+and
+MyApp
+with
+Settings.app_name
+if you've changed these values in
+Settings
+Platform
+Path
+Windows
+C:\Users\<User>\AppData\Roaming\MyCompany\MyApp\ultralight.log
+macOS
+~/Library/Caches/com.MyCompany.MyApp/ultralight.log
+Linux
+~/.cache/MyCompany-MyApp/ultralight.log
+Updated
+8 days ago
